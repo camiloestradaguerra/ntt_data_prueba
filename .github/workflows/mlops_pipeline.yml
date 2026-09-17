@@ -1,0 +1,77 @@
+name: MLOps End-to-End Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar Dependencias
+        run: |
+          sudo apt-get update && sudo apt-get install -y rclone
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Configurar Autenticación de Google Drive
+        env:
+          GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+          GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "$GDRIVE_SA_JSON" > ~/.config/rclone/sa.json
+          cat <<EOF > ~/.config/rclone/rclone.conf
+          [gdrive]
+          type = drive
+          scope = drive
+          service_account_file = ~/.config/rclone/sa.json
+          root_folder_id = $GDRIVE_ROOT_FOLDER_ID
+          EOF
+
+      - name: Crear Estructura de Directorios
+        run: |
+          make setup
+
+      - name: Descargar Datos Raw desde Google Drive
+        run: |
+          rclone copy "gdrive:data/01_raw/coffee_db.parquet" data/01_raw/
+
+      - name: Paso 1 - ETL
+        run: |
+          make etl
+
+      - name: Paso 2 - Feature Engineering
+        run: |
+          make features
+
+      - name: Paso 3 - Training & Optimization
+        run: |
+          make train
+
+      - name: Paso 4 - Evaluation
+        run: |
+          make evaluate
+
+      - name: Paso 5 - Recursive Forecasting
+        run: |
+          make forecast
+
+      - name: Exportar Resultados a Google Drive
+        run: |
+          rclone copy data/02_processed/ gdrive:data/02_processed/
+          rclone copy data/03_features/ gdrive:data/03_features/
+          rclone copy data/04_models/ gdrive:data/04_models/
+          rclone copy data/05_evaluation/ gdrive:data/05_evaluation/
+          rclone copy data/06_predictions/ gdrive:data/06_predictions/
