@@ -1,0 +1,13 @@
+# Ignorar entornos virtuales
+venv/
+.venv/
+env/
+
+# Ignorar archivos temporales de Python
+__pycache__/
+*.pyc
+
+# Ignorar tu carpeta de datos/modelos para que no se suba a GitHub
+# (Reemplaza "outputs/" por el nombre real de tu carpeta de datos)
+outputs/
+data/
