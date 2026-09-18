@@ -1,3 +1,28 @@
+# Pipeline de CI/CD del proyecto "Inteligencia de Mercado de Café".
+#
+# QUÉ HACE (y qué NO hace) este workflow -- para que quede explícito sin
+# tener que leer cada paso:
+#   1. Descarga el dataset raw desde Google Drive (vía rclone).
+#   2. Corre el pipeline MLOps batch completo (`make all`: ETL -> Features ->
+#      Training -> Evaluation), exactamente igual que en local.
+#   3. Valida que la API (FastAPI), el agente LLM y la UI (Streamlit) IMPORTEN
+#      sin errores -- son smoke tests de sintaxis/imports, NO levantan un
+#      servidor HTTP real ni abren un túnel ngrok.
+#   4. Solo en push a `main`/`master`: sube los artefactos generados
+#      (datos procesados, features, modelos, métricas de evaluación) de
+#      vuelta a Google Drive, para que queden versionados fuera del runner.
+#
+# Lo que este workflow NUNCA hace: ejecutar `make run-api`, `make run-ui` ni
+# abrir un túnel ngrok. Motivo: un runner de GitHub Actions es efímero (se
+# destruye al terminar el job) y no acepta tráfico entrante desde internet,
+# así que un servidor o un túnel dejado corriendo ahí quedaría inalcanzable
+# de inmediato -- no hay "URL pública del CI" que se pueda compartir. Si se
+# necesita una demo pública persistente de la API/UI, esa demo se levanta
+# fuera de CI: en la máquina de un desarrollador con `make run-api` /
+# `make run-ui` (túnel ngrok automático, ver Makefile y README.md), o
+# desplegando la API/UI en un servicio que sí acepte tráfico entrante
+# (una VM, un PaaS tipo Render/Railway, un contenedor en la nube, etc. --
+# no configurado en este repo).
 name: MLOps End-to-End Pipeline
 
 on:
@@ -44,14 +69,22 @@ jobs:
         run: |
           rclone copy "gdrive:data/01_raw/coffee_db.parquet" data/01_raw/
 
+      # ETL -> Features -> Training (modelos eval + prod) -> Evaluation.
+      # Ver Makefile (target `all`) para el detalle de cada paso.
       - name: Ejecutar Pipeline MLOps Completo (ETL -> Train -> Eval)
         run: |
           make all
 
+      # Smoke test de import únicamente: confirma que `src/api/main.py` y sus
+      # artefactos (modelo prod, encoder) cargan sin excepciones. No levanta
+      # uvicorn ni abre puerto alguno.
       - name: Validar Carga y Sintaxis de la API FastAPI
         run: |
           python -c "from src.api.main import app; print('✅ API y artefactos cargados correctamente en CI/CD')"
 
+      # Smoke test del agente: solo valida que `src/agent/bot.py` importe
+      # (usa un `.env` temporal, descartado al terminar el job -- no es el
+      # `.env` real del repo). No hace ninguna llamada real al modelo LLM.
       - name: Validar Módulo del Agente LLM
         env:
           HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
@@ -63,6 +96,9 @@ jobs:
           echo "MODEL_NAME=${MODEL_NAME}" >> .env
           make test-agent
 
+      # Smoke test de la UI: solo confirma que `app.py` importe sin errores
+      # de sintaxis/dependencias. No ejecuta `streamlit run` ni abre ngrok
+      # (ver el bloque de comentarios al inicio de este archivo).
       - name: Validar Sintaxis de la App Streamlit
         run: |
           python -c "import app; print('✅ Módulo Streamlit cargado correctamente sin errores')"
@@ -74,3 +110,23 @@ jobs:
           rclone copy data/03_features/ gdrive:data/03_features/
           rclone copy data/04_models/ gdrive:data/04_models/
           rclone copy data/05_evaluation/ gdrive:data/05_evaluation/
+
+      # Paso puramente informativo (no falla el job): deja constancia, en el
+      # resumen de cada corrida en la pestaña "Actions" de GitHub, de que
+      # este pipeline es batch + smoke tests y no expone ninguna URL pública
+      # -- para que quede visible sin tener que abrir este .yml.
+      - name: Resumen de Alcance del CI/CD
+        if: always()
+        run: |
+          {
+            echo "### Alcance de este workflow"
+            echo ""
+            echo "- ✅ Pipeline MLOps batch (ETL, features, training, evaluation)."
+            echo "- ✅ Smoke tests de import de API, agente y UI."
+            echo "- ✅ (solo main/master) Sincronización de artefactos a Google Drive."
+            echo "- 🚫 NO levanta \`run-api\` / \`run-ui\` ni abre un túnel ngrok:"
+            echo "  un runner de GitHub Actions es efímero y no acepta tráfico"
+            echo "  entrante, así que no hay una URL pública que compartir desde"
+            echo "  aquí. Para una demo pública, corre \`make run-api\` /"
+            echo "  \`make run-ui\` en una máquina propia (ver README.md)."
+          } >> "$GITHUB_STEP_SUMMARY"

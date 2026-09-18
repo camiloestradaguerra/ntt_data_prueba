@@ -144,7 +144,26 @@ def reconstruct_level_from_diff(lag_1: np.ndarray, diff_predictions: np.ndarray)
 
 
 class DemandForecastModel:
-    """Modelo global LightGBM en espacio de diferencias (YoY delta)."""
+    """Modelo global LightGBM en espacio de diferencias (YoY delta).
+
+    IMPORTANTE -- Dos roles, dos artefactos, NUNCA intercambiables:
+
+    - ``model_role="eval"``  -> entrenado SOLO con años <= 2015. Es el único
+      modelo con el que tiene sentido calcular métricas de validación sobre
+      2016-2019, porque nunca vio esos años durante el entrenamiento. Se
+      serializa como ``lgbm_eval.joblib`` y lo consume EXCLUSIVAMENTE el
+      Paso 4 (``src/pipelines/4_evaluation``).
+    - ``model_role="prod"``  -> re-entrenado con TODO el historial disponible
+      (incluye 2016-2019) para maximizar la información al pronosticar el
+      futuro (>=2020). Sus predicciones sobre 2016-2019 NO son una medida de
+      desempeño honesta (el modelo ya vio esos datos) y por eso nunca debe
+      usarse para reportar métricas. Se serializa como ``lgbm_prod.joblib``
+      y lo consume EXCLUSIVAMENTE la API (``src/api/services.py``).
+
+    ``model_role`` y ``train_year_range`` son metadatos de auditoría (no
+    afectan la inferencia); permiten que cualquier consumidor detecte en
+    tiempo de carga si se equivocó de artefacto.
+    """
 
     DEFAULT_PARAMS: dict[str, Any] = {
         "n_estimators": 500,
@@ -156,6 +175,8 @@ class DemandForecastModel:
         "subsample_freq": 1,
     }
 
+    YEAR_COL = "Year"
+
     def __init__(
         self,
         feature_columns: list[str],
@@ -163,6 +184,7 @@ class DemandForecastModel:
         diff_target_col: str,
         random_state: int = 42,
         hyperparams: Optional[dict[str, Any]] = None,
+        model_role: str = "unspecified",
     ) -> None:
         self.feature_columns = feature_columns
         self.categorical_features = categorical_features
@@ -170,6 +192,10 @@ class DemandForecastModel:
         self.random_state = random_state
         self.hyperparams = {**self.DEFAULT_PARAMS, **(hyperparams or {})}
         self.model: Optional[lgb.LGBMRegressor] = None
+
+        # --- Metadatos de auditoría (ver docstring de la clase) ---
+        self.model_role = model_role
+        self.train_year_range: Optional[tuple[int, int]] = None
 
     def _prepare_features(self, df: pd.DataFrame) -> pd.DataFrame:
         X = df[self.feature_columns].copy()
@@ -188,6 +214,16 @@ class DemandForecastModel:
             n_jobs=-1,
         )
         self.model.fit(X_train, y_train, categorical_feature=self.categorical_features)
+
+        if self.YEAR_COL in train_df.columns:
+            self.train_year_range = (int(train_df[self.YEAR_COL].min()), int(train_df[self.YEAR_COL].max()))
+
+        logger.info(
+            "[modelo:%s] Entrenado con %s filas | rango de años visto: %s",
+            self.model_role,
+            len(train_df),
+            self.train_year_range,
+        )
         return self
 
     def predict(self, df: pd.DataFrame) -> np.ndarray:
@@ -236,6 +272,7 @@ class HyperparameterTuner:
                 diff_target_col=self.diff_target_col,
                 random_state=self.config.random_state,
                 hyperparams=params,
+                model_role="cv_trial",
             )
             model.fit(fold_train)
             diff_pred = model.predict(fold_val)
@@ -261,29 +298,90 @@ class HyperparameterTuner:
 
 
 class ArtifactManager:
-    """Serialización y persistencia del modelo final y resultados de evaluación."""
+    """Serialización y persistencia de los DOS artefactos de modelo y sus metadatos.
+
+    Genera:
+      - ``<output_eval_model_path>``  (p.ej. ``lgbm_eval.joblib``): modelo
+        entrenado solo con 1990-2015. Consumido por el Paso 4 (evaluación).
+      - ``<output_prod_model_path>``  (p.ej. ``lgbm_prod.joblib``): modelo
+        entrenado con 1990-2019. Consumido por la API de producción.
+      - ``metrics.json``: métricas de validación HONESTAS (siempre calculadas
+        con el modelo eval, nunca con el de producción).
+      - ``best_params.json``: hiperparámetros ganadores de Optuna.
+      - ``model_registry.json``: manifiesto legible que documenta explícitamente
+        el rol, rango de años y ruta de cada artefacto -- para que en
+        producción quede claro (sin tener que leer código) cuál modelo es
+        cuál y por qué no son intercambiables.
+    """
 
     @staticmethod
     def save_results(
-        output_model_path: Path,
+        output_eval_model_path: Path,
+        output_prod_model_path: Path,
         artifacts_dir: Path,
-        model: DemandForecastModel,
+        eval_model: DemandForecastModel,
+        prod_model: DemandForecastModel,
         metrics: dict[str, float],
         best_params: dict[str, Any],
     ) -> None:
-        output_model_path.parent.mkdir(parents=True, exist_ok=True)
+        output_eval_model_path.parent.mkdir(parents=True, exist_ok=True)
+        output_prod_model_path.parent.mkdir(parents=True, exist_ok=True)
         artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-        joblib.dump(model, output_model_path)
-        logger.info("Modelo guardado en: %s", output_model_path.resolve())
+        # 1. Modelo EVAL (holdout honesto -> solo para src/pipelines/4_evaluation)
+        joblib.dump(eval_model, output_eval_model_path)
+        logger.info(
+            "[modelo:eval] Guardado en: %s (años %s) -- USAR SOLO para métricas de validación offline.",
+            output_eval_model_path.resolve(),
+            eval_model.train_year_range,
+        )
 
+        # 2. Modelo PROD (todo el historial -> solo para la API / servicio de inferencia)
+        joblib.dump(prod_model, output_prod_model_path)
+        logger.info(
+            "[modelo:prod] Guardado en: %s (años %s) -- USAR SOLO para inferencia en producción (API). "
+            "Sus predicciones sobre 2016-2019 NO son una métrica valida (ya vio esos datos en entrenamiento).",
+            output_prod_model_path.resolve(),
+            prod_model.train_year_range,
+        )
+
+        # 3. Métricas honestas (siempre provienen del modelo eval)
         with open(artifacts_dir / "metrics.json", "w", encoding="utf-8") as f:
             json.dump(metrics, f, indent=4)
 
+        # 4. Hiperparámetros ganadores (compartidos por ambos modelos)
         with open(artifacts_dir / "best_params.json", "w", encoding="utf-8") as f:
             json.dump(best_params, f, indent=4)
 
-        logger.info("Artefactos exportados en: %s", artifacts_dir.resolve())
+        # 5. Manifiesto de artefactos: documentación explícita para producción/auditoría
+        registry = {
+            "eval_model": {
+                "path": str(output_eval_model_path),
+                "role": "eval",
+                "train_year_range": list(eval_model.train_year_range) if eval_model.train_year_range else None,
+                "consumers": ["src/pipelines/4_evaluation"],
+                "notes": (
+                    "Entrenado unicamente con anios <= 2015. Es el UNICO modelo valido para "
+                    "reportar metricas de validacion sobre 2016-2019. No usar en la API."
+                ),
+                "validation_metrics_2016_2019": metrics,
+            },
+            "prod_model": {
+                "path": str(output_prod_model_path),
+                "role": "prod",
+                "train_year_range": list(prod_model.train_year_range) if prod_model.train_year_range else None,
+                "consumers": ["src/api/services.py", "src/api/main.py", "app.py (fallback local)"],
+                "notes": (
+                    "Re-entrenado con el 100% del historial (incluye 2016-2019) para maximizar "
+                    "la informacion disponible al pronosticar el futuro (>=2020). NO usar sus "
+                    "predicciones sobre 2016-2019 como metrica de desempeno: son in-sample."
+                ),
+            },
+        }
+        with open(artifacts_dir / "model_registry.json", "w", encoding="utf-8") as f:
+            json.dump(registry, f, indent=4, ensure_ascii=False)
+
+        logger.info("Artefactos exportados en: %s (ver model_registry.json)", artifacts_dir.resolve())
 
 
 def parse_args() -> argparse.Namespace:
@@ -303,16 +401,24 @@ def parse_args() -> argparse.Namespace:
         help="Directorio explícito con artefactos del Paso 2 (feature_config.json).",
     )
     parser.add_argument(
-        "--output_model_path",
+        "--output_eval_model_path",
         type=Path,
         required=True,
-        help="Ruta explícita de destino para el modelo entrenado (.joblib).",
+        help="Ruta de destino para el modelo de EVALUACIÓN (.joblib), entrenado solo con <=2015. "
+        "Lo consume exclusivamente src/pipelines/4_evaluation.",
+    )
+    parser.add_argument(
+        "--output_prod_model_path",
+        type=Path,
+        required=True,
+        help="Ruta de destino para el modelo de PRODUCCIÓN (.joblib), entrenado con todo el historial. "
+        "Lo consume exclusivamente la API (src/api/services.py).",
     )
     parser.add_argument(
         "--artifacts_dir",
         type=Path,
         required=True,
-        help="Directorio explícito de destino para métricas e hiperparámetros.",
+        help="Directorio explícito de destino para métricas, hiperparámetros y el manifiesto de modelos.",
     )
     parser.add_argument(
         "--n_trials",
@@ -350,13 +456,19 @@ def main() -> None:
     )
     best_params = tuner.tune(train_df)
 
-    # 1. Evaluación Offline (Holdout 2016-2019)
+    # ------------------------------------------------------------------
+    # 1. Modelo EVAL -- entrenado SOLO con <=2015 (holdout honesto).
+    #    Este es el ÚNICO modelo cuyas métricas sobre 2016-2019 son
+    #    válidas, porque nunca vio esos años en entrenamiento.
+    # ------------------------------------------------------------------
+    logger.info("Entrenando modelo EVAL (holdout honesto, años <= %s)...", train_config.train_end_year)
     eval_model = DemandForecastModel(
         feature_columns=feature_columns,
         categorical_features=categorical_features,
         diff_target_col=diff_target_col,
         random_state=train_config.random_state,
         hyperparams=best_params,
+        model_role="eval",
     )
     eval_model.fit(train_df)
 
@@ -365,28 +477,52 @@ def main() -> None:
     metrics = regression_report(val_df[target_col].to_numpy(), val_level_preds)
 
     logger.info(
-        "Métricas Validación (2016-2019) -> MAE: %.2f | RMSE: %.2f | WAPE: %.4f",
+        "Métricas de Validación HONESTAS (modelo eval, %s-%s) -> MAE: %.2f | RMSE: %.2f | WAPE: %.4f",
+        train_config.val_start_year,
+        train_config.val_end_year,
         metrics["MAE"],
         metrics["RMSE"],
         metrics["WAPE"],
     )
 
-    # 2. Refit de Producción (Entrenamiento con todo el historial: 1990-2019)
-    logger.info("Ejecutando Refit final con el 100% de los datos para serialización de producción...")
+    # ------------------------------------------------------------------
+    # 2. Modelo PROD -- re-entrenado con el 100% del historial (1990-2019)
+    #    para servir el mejor pronóstico posible en producción (>=2020).
+    #    ADVERTENCIA: al incluir 2016-2019 en su entrenamiento, sus
+    #    predicciones sobre esos años NO son una métrica de desempeño
+    #    válida (in-sample). Nunca evaluar este modelo; nunca reportar
+    #    sus métricas como si fueran las del modelo eval.
+    # ------------------------------------------------------------------
+    logger.info(
+        "Entrenando modelo PROD (100%% del historial, incluye %s-%s) para inferencia en producción...",
+        train_config.val_start_year,
+        train_config.val_end_year,
+    )
     prod_model = DemandForecastModel(
         feature_columns=feature_columns,
         categorical_features=categorical_features,
         diff_target_col=diff_target_col,
         random_state=train_config.random_state,
         hyperparams=best_params,
+        model_role="prod",
     )
     prod_model.fit(clean_df)
+    logger.warning(
+        "El modelo PROD fue entrenado incluyendo los años de validación (%s-%s). "
+        "NO usar sus predicciones en ese rango como métrica de desempeño -- "
+        "usar únicamente el modelo eval (%s) para eso.",
+        train_config.val_start_year,
+        train_config.val_end_year,
+        args.output_eval_model_path.name,
+    )
 
-    # 3. Guardar el modelo re-entrenado y sus métricas de validación
+    # 3. Guardar ambos modelos + métricas + manifiesto de auditoría
     ArtifactManager.save_results(
-        output_model_path=args.output_model_path,
+        output_eval_model_path=args.output_eval_model_path,
+        output_prod_model_path=args.output_prod_model_path,
         artifacts_dir=args.artifacts_dir,
-        model=prod_model,
+        eval_model=eval_model,
+        prod_model=prod_model,
         metrics=metrics,
         best_params=best_params,
     )

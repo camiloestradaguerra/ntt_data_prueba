@@ -8,8 +8,17 @@ ntt_data/
 # Ignorar archivos temporales de Python
 __pycache__/
 *.pyc
+.mypy_cache/
 
 # Ignorar tu carpeta de datos/modelos para que no se suba a GitHub
 # (Reemplaza "outputs/" por el nombre real de tu carpeta de datos)
 outputs/
 data/
+
+# Reportes/gráficos de verificación generados por scripts/check_predictions.py
+# y scripts/verify_predictions.py -- artefactos regenerables, no fuente.
+reports/
+
+# Configuración local de asistentes de IA (no es parte del proyecto)
+.agents/
+.claude/

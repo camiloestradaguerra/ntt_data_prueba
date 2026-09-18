@@ -8,7 +8,10 @@ class ForecastRequest(BaseModel):
 
     countries: list[str] = Field(
         ...,
-        description="Lista de nombres exactos de países (ej. ['Colombia', 'Brazil'])",
+        min_length=1,
+        description="Lista de nombres exactos de países, tal como aparecen en el dataset "
+        "(ej. ['Colombia', 'Brazil']). Usa GET /countries para obtener la lista completa y "
+        "evitar errores de nombre (p.ej. 'Viet Nam', no 'Vietnam').",
         example=["Colombia", "Brazil"],
     )
     end_year: int = Field(
@@ -31,16 +34,35 @@ class DataPoint(BaseModel):
 
 
 class CountryForecastResponse(BaseModel):
-    """Estructura de respuesta individual por país."""
+    """Estructura de respuesta individual por país.
+
+    Si el país solicitado no existe en el registro histórico (nombre mal
+    escrito, o país fuera del dataset), esta entrada NO se omite ni hace
+    fallar la respuesta completa: se devuelve con `error` describiendo el
+    problema y el resto de campos en su valor por defecto (`data` vacío).
+    Así, un país inválido en un lote de varios países no le impide a la UI
+    ni al agente LLM procesar los países que sí son válidos.
+    """
 
     country: str
-    coffee_type: str
-    historical_end_year: int = 2019
-    forecast_end_year: int
-    data: list[DataPoint]
+    coffee_type: str | None = None
+    historical_end_year: int | None = None
+    forecast_end_year: int | None = None
+    data: list[DataPoint] = Field(default_factory=list)
+    error: str | None = Field(
+        default=None,
+        description="Mensaje explicando por qué no se pudo generar la proyección para este "
+        "país (p.ej. nombre no encontrado en el dataset). None si la proyección fue exitosa.",
+    )
 
 
 class MultiForecastResponse(BaseModel):
     """Estructura de respuesta global conteniendo todos los países solicitados."""
 
     results: list[CountryForecastResponse]
+
+
+class AvailableCountriesResponse(BaseModel):
+    """Lista de países que la API puede proyectar, tal como aparecen en el dataset."""
+
+    countries: list[str]
