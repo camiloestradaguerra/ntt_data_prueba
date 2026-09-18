@@ -7,7 +7,7 @@ MODEL_PATH := data/04_models/lgbm_model.joblib
 MODEL_ARTIFACTS := data/04_models/artifacts
 EVAL_DIR := data/05_evaluation
 
-.PHONY: all setup etl features train evaluate clean
+.PHONY: all setup etl features train evaluate run-api tunnel clean
 
 all: setup etl features train evaluate
 
@@ -25,6 +25,13 @@ train:
 
 evaluate:
 	$(PYTHON) src/pipelines/4_evaluation/main.py --input_path $(FEATURES_DATA) --model_path $(MODEL_PATH) --input_artifacts_dir $(FEATURE_ARTIFACTS) --output_dir $(EVAL_DIR)
+
+# Comandos de ejecución para desarrollo local
+run-api:
+	uvicorn src.api.main:app --reload --port 8000
+
+tunnel:
+	ngrok http 8000
 
 clean:
 	@$(PYTHON) -c "import pathlib, shutil; [shutil.rmtree(p) if p.is_dir() else p.unlink() for folder in pathlib.Path('data').glob('*') if folder.name != '01_raw' for p in folder.glob('*')]"
