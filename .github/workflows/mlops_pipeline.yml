@@ -52,6 +52,14 @@ jobs:
         run: |
           python -c "from src.api.main import app; print('✅ API y artefactos cargados correctamente en CI/CD')"
 
+      - name: Validar Módulo del Agente LLM
+        env:
+          HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
+          API_URL: "http://127.0.0.1:8000"
+          MODEL_NAME: "deepseek-ai/DeepSeek-R1-0528"
+        run: |
+          make test-agent
+
       - name: Exportar Resultados y Artefactos a Google Drive
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         run: |

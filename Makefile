@@ -7,7 +7,7 @@ MODEL_PATH := data/04_models/lgbm_model.joblib
 MODEL_ARTIFACTS := data/04_models/artifacts
 EVAL_DIR := data/05_evaluation
 
-.PHONY: all setup etl features train evaluate run-api tunnel clean
+.PHONY: all setup etl features train evaluate run-api run-agent test-agent tunnel clean
 
 all: setup etl features train evaluate
 
@@ -21,14 +21,20 @@ features:
 	$(PYTHON) src/pipelines/2_feature_engineering/main.py --input_path $(PROCESSED_DATA) --output_path $(FEATURES_DATA) --artifacts_dir $(FEATURE_ARTIFACTS)
 
 train:
-	$(PYTHON) src/pipelines/3_training/main.py --input_path $(FEATURES_DATA) --input_artifacts_dir $(FEATURE_ARTIFACTS) --output_model_path $(MODEL_PATH) --artifacts_dir $(MODEL_ARTIFACTS) --n_trials 40
+	$(PYTHON) src/pipelines/3_training/main.py --input_path $(FEATURES_DATA) --input_artifacts_dir $(FEATURE_ARTIFACTS) --output_model_path $(MODEL_PATH) --artifacts_dir $(MODEL_ARTIFACTS) --n_trials 15
 
 evaluate:
 	$(PYTHON) src/pipelines/4_evaluation/main.py --input_path $(FEATURES_DATA) --model_path $(MODEL_PATH) --input_artifacts_dir $(FEATURE_ARTIFACTS) --output_dir $(EVAL_DIR)
 
-# Comandos de ejecución para desarrollo local
+# Comandos de ejecución para desarrollo local y agente
 run-api:
 	uvicorn src.api.main:app --reload --port 8000
+
+run-agent:
+	$(PYTHON) -m src.agent.cli_chat
+
+test-agent:
+	$(PYTHON) -c "from src.agent.bot import analyze_market; print('✅ Módulo de agente e InferenceClient importados correctamente')"
 
 tunnel:
 	ngrok http 8000
