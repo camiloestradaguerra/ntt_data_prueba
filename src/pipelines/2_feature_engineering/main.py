@@ -82,7 +82,7 @@ class TimeSeriesFeatureEngineer:
 
 
 class CategoricalEncoder:
-    """Codifica identificadores categóricos de forma determinista y persiste sus mapeos."""
+    """Codifica identificadores categóricos de forma determinista y permite inferencia en producción."""
 
     UNSEEN_CODE = -1
 
@@ -90,16 +90,29 @@ class CategoricalEncoder:
         self.columns = columns
         self.mappings: dict[str, dict[str, int]] = {}
 
-    def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
+    def fit(self, df: pd.DataFrame) -> "CategoricalEncoder":
+        """Aprende los mapeos numéricos a partir de los datos de entrenamiento."""
         for col in self.columns:
             if col in df.columns:
                 categories = sorted(df[col].dropna().unique())
-                mapping = {str(category): code for code, category in enumerate(categories)}
-                self.mappings[col] = mapping
-                df[f"{col}_encoded"] = df[col].map(mapping).fillna(self.UNSEEN_CODE).astype(int)
-        logger.info("Columnas categóricas codificadas: %s", self.columns)
+                self.mappings[col] = {str(category): code for code, category in enumerate(categories)}
+        return self
+
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Aplica los mapeos aprendidos sobre un DataFrame (Inferencia o Entrenamiento)."""
+        df = df.copy()
+        for col in self.columns:
+            if col in self.mappings:
+                mapping = self.mappings[col]
+                # Inferencia segura: si llega una categoría desconocida, asigna UNSEEN_CODE (-1)
+                df[f"{col}_encoded"] = (
+                    df[col].astype(str).map(mapping).fillna(self.UNSEEN_CODE).astype(int)
+                )
         return df
+
+    def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Aprende los mapeos y transforma el dataset en un solo paso."""
+        return self.fit(df).transform(df)
 
 
 class ArtifactManager:
@@ -111,6 +124,7 @@ class ArtifactManager:
         encoder: CategoricalEncoder,
         feature_columns: list[str],
         categorical_features: list[str],
+        raw_categorical_features: list[str],
         target_col: str,
         diff_target_col: str,
     ) -> None:
@@ -129,6 +143,7 @@ class ArtifactManager:
         metadata: dict[str, Any] = {
             "feature_columns": feature_columns,
             "categorical_features": categorical_features,
+            "raw_categorical_features": raw_categorical_features,
             "target_col": target_col,
             "diff_target_col": diff_target_col,
         }
@@ -167,7 +182,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    # Creación explícita de directorios de destino
     args.output_path.parent.mkdir(parents=True, exist_ok=True)
     args.artifacts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -178,8 +192,9 @@ def main() -> None:
     feature_engineer = TimeSeriesFeatureEngineer()
     featured_df = feature_engineer.transform(long_df)
 
-    # 3. Codificación de categóricas
-    encoder = CategoricalEncoder(columns=["Country", "Coffee_type"])
+    # 3. Codificación de categóricas con soporte de inferencia (.fit_transform / .transform)
+    raw_categoricals = ["Country", "Coffee_type"]
+    encoder = CategoricalEncoder(columns=raw_categoricals)
     final_df = encoder.fit_transform(featured_df)
 
     # 4. Definición del contrato de features
@@ -203,6 +218,7 @@ def main() -> None:
         encoder=encoder,
         feature_columns=feature_columns,
         categorical_features=categorical_features,
+        raw_categorical_features=raw_categoricals,
         target_col=feature_engineer.target_col,
         diff_target_col=feature_engineer.diff_target_col,
     )

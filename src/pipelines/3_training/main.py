@@ -38,7 +38,7 @@ class TrainConfig:
     year_col: str = "Year"
     train_end_year: int = 2015
     val_start_year: int = 2016
-    val_end_year: int = 2020
+    val_end_year: int = 2019  # Ajustado al último año real del dataset
     random_state: int = 42
     cv_n_splits: int = 3
     cv_val_years: int = 2
@@ -350,25 +350,43 @@ def main() -> None:
     )
     best_params = tuner.tune(train_df)
 
-    model = DemandForecastModel(
+    # 1. Evaluación Offline (Holdout 2016-2019)
+    eval_model = DemandForecastModel(
         feature_columns=feature_columns,
         categorical_features=categorical_features,
         diff_target_col=diff_target_col,
         random_state=train_config.random_state,
         hyperparams=best_params,
     )
-    model.fit(train_df)
+    eval_model.fit(train_df)
 
-    val_diff_preds = model.predict(val_df)
+    val_diff_preds = eval_model.predict(val_df)
     val_level_preds = reconstruct_level_from_diff(val_df["lag_1"].to_numpy(), val_diff_preds)
     metrics = regression_report(val_df[target_col].to_numpy(), val_level_preds)
 
-    logger.info("Métricas Validación -> MAE: %.2f | RMSE: %.2f | WAPE: %.4f", metrics["MAE"], metrics["RMSE"], metrics["WAPE"])
+    logger.info(
+        "Métricas Validación (2016-2019) -> MAE: %.2f | RMSE: %.2f | WAPE: %.4f",
+        metrics["MAE"],
+        metrics["RMSE"],
+        metrics["WAPE"],
+    )
 
+    # 2. Refit de Producción (Entrenamiento con todo el historial: 1990-2019)
+    logger.info("Ejecutando Refit final con el 100% de los datos para serialización de producción...")
+    prod_model = DemandForecastModel(
+        feature_columns=feature_columns,
+        categorical_features=categorical_features,
+        diff_target_col=diff_target_col,
+        random_state=train_config.random_state,
+        hyperparams=best_params,
+    )
+    prod_model.fit(clean_df)
+
+    # 3. Guardar el modelo re-entrenado y sus métricas de validación
     ArtifactManager.save_results(
         output_model_path=args.output_model_path,
         artifacts_dir=args.artifacts_dir,
-        model=model,
+        model=prod_model,
         metrics=metrics,
         best_params=best_params,
     )

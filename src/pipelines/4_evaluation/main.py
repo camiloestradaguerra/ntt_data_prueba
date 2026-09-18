@@ -65,7 +65,7 @@ class EvalConfig:
 
     year_col: str = "Year"
     val_start_year: int = 2016
-    val_end_year: int = 2020
+    val_end_year: int = 2019
 
 
 class DataLoader:
@@ -117,7 +117,7 @@ class ModelEvaluator:
         self.config = config
 
     def evaluate(self, df: pd.DataFrame) -> tuple[dict[str, float], pd.DataFrame]:
-        # Filtrar la ventana de prueba (2016 - 2020)
+        # Filtrar la ventana de prueba (2016 - 2019)
         eval_df = df.loc[
             df[self.config.year_col].between(self.config.val_start_year, self.config.val_end_year)
         ].copy()
