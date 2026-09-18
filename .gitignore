@@ -3,6 +3,7 @@ venv/
 .venv/
 env/
 ntt_data/
+.env
 
 # Ignorar archivos temporales de Python
 __pycache__/
