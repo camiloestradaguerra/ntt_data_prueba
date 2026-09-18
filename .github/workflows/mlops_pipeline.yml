@@ -27,18 +27,12 @@ jobs:
 
       - name: Configurar Autenticación de Google Drive
         env:
-          GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+          GDRIVE_RCLONE_CONF: ${{ secrets.GDRIVE_RCLONE_CONF }}
           GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
         run: |
           mkdir -p ~/.config/rclone
-          echo "$GDRIVE_SA_JSON" > ~/.config/rclone/sa.json
-          cat <<EOF > ~/.config/rclone/rclone.conf
-          [gdrive]
-          type = drive
-          scope = drive
-          service_account_file = ~/.config/rclone/sa.json
-          root_folder_id = $GDRIVE_ROOT_FOLDER_ID
-          EOF
+          echo "$GDRIVE_RCLONE_CONF" > ~/.config/rclone/rclone.conf
+          echo "root_folder_id = $GDRIVE_ROOT_FOLDER_ID" >> ~/.config/rclone/rclone.conf
 
       - name: Crear Estructura de Directorios
         run: |
