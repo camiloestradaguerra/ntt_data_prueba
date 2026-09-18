@@ -63,6 +63,10 @@ jobs:
           echo "MODEL_NAME=${MODEL_NAME}" >> .env
           make test-agent
 
+      - name: Validar Sintaxis de la App Streamlit
+        run: |
+          python -c "import app; print('✅ Módulo Streamlit cargado correctamente sin errores')"
+
       - name: Exportar Resultados y Artefactos a Google Drive
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         run: |
