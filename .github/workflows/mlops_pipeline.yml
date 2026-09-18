@@ -56,8 +56,11 @@ jobs:
         env:
           HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
           API_URL: "http://127.0.0.1:8000"
-          MODEL_NAME: "deepseek-ai/DeepSeek-R1-0528"
+          MODEL_NAME: "Qwen/Qwen2.5-Coder-32B-Instruct"
         run: |
+          echo "HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}" > .env
+          echo "API_URL=${API_URL}" >> .env
+          echo "MODEL_NAME=${MODEL_NAME}" >> .env
           make test-agent
 
       - name: Exportar Resultados y Artefactos a Google Drive
